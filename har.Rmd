@@ -102,7 +102,7 @@ summary(quiz)
 ```
 
 With a quick look at the columns we can see that there are some columns that won't be useful for the classification.
-The columns X (observation id), user_name, cvtd_timestamp should not affect the outcome and we can remove them from the datasets. Keeping them might confound our classifiers, for instance if all values of column X (an observation id) below 1000 are of class A, the algorithm might learn X as the most important feature, which does not make sense.
+The columns X (observation id), user_name, cvtd_timestamp, num_window are identification columns and should not affect the outcome and we can remove them from the datasets. Keeping them might confound our classifiers, for instance if all values of column X (an observation id) below 1000 are of class A, the algorithm might learn X as the most important feature, which does not make sense.
 
 Another peculiarity of the data, is that many columns have a lot of NAs (sometimes over 95%). By reading the referece paper, we see that these columns are statistic variables computed from the raw data. Furthermore, looking at the test set provided (the 20 observations), we see that these columns are NA for all observations.
 Our approach here will be to drop these statistic variables.
@@ -119,11 +119,11 @@ validatingNoNA <- validating[, keepCols]
 testingNoNA <- testing[, keepCols]
 quizNoNA <- quiz[, quizCols]
 
-#We also remove X, and the raw_timestamp_part_1/2
-trainingNoNA <- trainingNoNA[, -1:-3]
-validatingNoNA <- validatingNoNA[, -1:-3]
-testingNoNA <- testingNoNA[, -1:-3]
-quizNoNA <- quizNoNA[, -1:-3]
+#We also remove X, raw_timestamp_part_1/2, and num_window
+trainingNoNA <- trainingNoNA[, -1:-4]
+validatingNoNA <- validatingNoNA[, -1:-4]
+testingNoNA <- testingNoNA[, -1:-4]
+quizNoNA <- quizNoNA[, -1:-4]
 ```
 
 
@@ -142,6 +142,8 @@ accuracyComp <- function(predictions, values) {
 ## A single classifier : The SVM
 
 We first try out a single classifier, the Support Vector Machine. SVM is a robust classifier, known to work well in high dimensional problems. Here the default radial kernel is used.
+
+Note that the `svm` function, automatically whitens the data (to zero mean and unit variance), so we shouldn't worry about that. The scaling is then applied at prediction set to the newdata.
 
 ```{r svm, cache=TRUE}
 set.seed(1001)
@@ -205,16 +207,20 @@ RF accuracy on the test set:
 print(round(testRfAcc, 5))
 ```
 
-The algorithm trained using `caret::train` automatically computes an OOB accuracy estimate.
+Let's check important variables for the Random Forest trained
+```{r importantVars}
+varImp(rffit)
+```
+
+### Computing the OOB error rates
+
+The RF algorithm trained using `caret::train` automatically computes an OOB accuracy estimate.
 
 Each observation that was not used in the training of all the Random Forests, is predicted using those forests on which it was not trained, the result of all predictions of these observations is aggregated, and this gives an OOB accuracy estimate. That way, it is not necessary to use a separate validation set.
 
 This applies to "bagged" approaches.
 
-
-### Computing the OOB error rates
 The OOB error rate for the SVM is well estimated by the error rate on the held away test set (as done above).
-The OOB error rate for the RF is estimated automaticaly by confusionMatrix (below), or on the held away test set (above).
 
 
 ### Delving more into errors
