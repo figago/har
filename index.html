@@ -269,7 +269,7 @@ testRfAcc &lt;- accuracyComp(rfTestPreds, testingNoNA$classe)</code></pre>
 <p>This applies to “bagged” approaches.</p>
 <div id="computing-the-oob-error-rates" class="section level3">
 <h3>Computing the OOB error rates</h3>
-<p>The OOB error rate for the SVM is well estimated by the error rate on the held away test set. The OOB error rate for the RF is estimated using</p>
+<p>The OOB error rate for the SVM is well estimated by the error rate on the held away test set (as done above). The OOB error rate for the RF is estimated automaticaly by confusionMatrix (below), or on the held away test set (above).</p>
 </div>
 <div id="delving-more-into-errors" class="section level3">
 <h3>Delving more into errors</h3>

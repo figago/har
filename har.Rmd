@@ -213,8 +213,8 @@ This applies to "bagged" approaches.
 
 
 ### Computing the OOB error rates
-The OOB error rate for the SVM is well estimated by the error rate on the held away test set.
-The OOB error rate for the RF is estimated using 
+The OOB error rate for the SVM is well estimated by the error rate on the held away test set (as done above).
+The OOB error rate for the RF is estimated automaticaly by confusionMatrix (below), or on the held away test set (above).
 
 
 ### Delving more into errors
