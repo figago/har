@@ -1,0 +1,282 @@
+---
+title: "Human Activity Recognition - A Prediction Application"
+author: "Omar Ali Fdal"
+date: "20 October 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, cache = TRUE)
+library(caret)
+library(ggplot2)
+library(GGally)
+library(reshape)
+library(e1071)
+library(parallel)
+library(doParallel)
+```
+
+# Introduction
+In this analysis, we try to predict how well a physical exercise (human activity) is executed, based on a dataset of previous labeled executions. We will do this using two algorithms: SVM, and Random Forest.
+
+## Data source
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl, under the supervision of a professional coach, in five different fashions: 
+
+* Class A: exactly according to the specification
+
+* Class B: throwing the elbows to the front
+
+* Class C: lifting the dumbbell only halfway
+
+* Class D: lowering the dumbbell only halfway
+
+* Class E: throwing the hips to the front
+
+The experiment is described in details in Velloso et. al.[1].
+
+
+### Downloading the files
+
+```{r download}
+training_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testing_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training_path <- "./pml-training.csv"
+testing_path <- "./pml-testing.csv"
+if (!file.exists(training_path)) {
+  download.file(training_url, training_path, mode = "w")
+}
+if (!file.exists(testing_path)) {
+  download.file(testing_url, testing_path, mode = "w")
+}
+```
+
+
+## Loading the datasets
+### Creating training/validation/test sets
+
+Depending on the algorithms that we use, separate validation/test sets might be required in order to estimate the OOB error. This is the case for algorithms that use the whole training set to train, such as a single SVM, or a single Classification Tree.
+
+This is not needed for Bagging algorithms (such as Random Forests), as for each classifier we can compute the error on the Out Of Bag samples, and then an aggregation of these would estimate the OOB error.
+
+```{r loadData, cache=TRUE}
+alltraining <- read.csv(training_path)
+quiz <- read.csv(testing_path)
+
+# We create a validation/test set from the training set.
+inTrain <- createDataPartition(alltraining$classe, p=0.8, list=FALSE)
+training <- alltraining[inTrain,]
+test_validating <- alltraining[-inTrain,]
+
+inTest <- createDataPartition(test_validating$classe, p=0.5, list=FALSE)
+validating <- test_validating[-inTest,]
+testing <- test_validating[inTest,]
+
+dim(training)
+dim(validating)
+dim(testing)
+dim(quiz)
+```
+
+
+# Exploratory analysis
+
+## A look at the outcome balance
+
+For every classification problem, it is important to check whether the outcome classes are balanced, if they're not, then a usual approach might not apply directly.
+
+```{r balance, echo=FALSE}
+balance <- as.data.frame(table(training$classe))
+names(balance) <- c("Classe", "Count")
+plt <- ggplot(aes(x=Classe, y=Count), data=balance, ylim = c(0, 4500))
+plt + geom_col() + ggtitle("Classe balance")
+```
+
+We can see that the classes are balanced, so we can proceed as usual.
+
+## A look at the columns
+
+```{r summary, eval=FALSE}
+summary(training)
+summary(quiz)
+```
+
+With a quick look at the columns we can see that there are some columns that won't be useful for the classification.
+The columns X (observation id), user_name, cvtd_timestamp should not affect the outcome and we can remove them from the datasets. Keeping them might confound our classifiers, for instance if all values of column X (an observation id) below 1000 are of class A, the algorithm might learn X as the most important feature, which does not make sense.
+
+Another peculiarity of the data, is that many columns have a lot of NAs (sometimes over 95%). By reading the referece paper, we see that these columns are statistic variables computed from the raw data. Furthermore, looking at the test set provided (the 20 observations), we see that these columns are NA for all observations.
+Our approach here will be to drop these statistic variables.
+
+### Removing the statistics columns
+
+```{r, cache=TRUE, warning=FALSE}
+keepCols <- !is.na(apply(training, 2, sd))
+quizCols <- keepCols
+keepCols["classe"] = TRUE
+
+trainingNoNA <- training[, keepCols]
+validatingNoNA <- validating[, keepCols]
+testingNoNA <- testing[, keepCols]
+quizNoNA <- quiz[, quizCols]
+
+#We also remove X, and the raw_timestamp_part_1/2
+trainingNoNA <- trainingNoNA[, -1:-3]
+validatingNoNA <- validatingNoNA[, -1:-3]
+testingNoNA <- testingNoNA[, -1:-3]
+quizNoNA <- quizNoNA[, -1:-3]
+```
+
+
+# Training classifiers
+
+## Defining an evaluation metric
+
+For this categorical classification problem, with the 5 classes being roughly balanced, Accuracy should be a good evaluation metric. It is the proportion of correctly classified observations.
+
+```{r accDef}
+accuracyComp <- function(predictions, values) {
+  sum(predictions == values) / length(predictions)
+}
+```
+
+## A single classifier : The SVM
+
+We first try out a single classifier, the Support Vector Machine. SVM is a robust classifier, known to work well in high dimensional problems. Here the default radial kernel is used.
+
+```{r svm, cache=TRUE}
+set.seed(1001)
+svmfit <- svm(classe ~ ., data=trainingNoNA)
+svmPreds <- predict(svmfit, newdata = validatingNoNA)
+svmTestPreds <- predict(svmfit, newdata = testingNoNA)
+
+validSvmAcc <- accuracyComp(svmPreds, validatingNoNA$classe)
+testSvmAcc <- accuracyComp(svmTestPreds, testingNoNA$classe)
+
+print(paste(validSvmAcc, " SVM accuracy on validation set"))
+print(paste(testSvmAcc, " SVM accuracy on test set (OOB error estimate)"))
+```
+
+
+
+## An Ensemble approach: Random Forest
+Train a random forest with caret using the doParallel package allows a significant speed-up. Here I make a cluster using the two computer cores as nothing else is running on the machine at the time of the training. Usually, it is a good practice to keep one core for the OS (and even more cores for other users if the machine is shared among a team for instance).
+
+```{r parallel, echo=FALSE}
+cluster <- makeCluster(2)
+registerDoParallel(cluster)
+```
+
+We will use here a 10-fold Cross Validation strategy, less computationally intensive than the default Bootstrapping strategy that resamples the training dataset for each tree, for each forest.
+
+```{r randomForest, cache=TRUE}
+fitControl <- trainControl(method = "cv",
+                           number = 10,
+                           allowParallel=TRUE)
+
+rffit <- train(classe ~ ., 
+               data=trainingNoNA, 
+               method="rf",
+               trControl = fitControl,
+               verbose=FALSE,
+               na.action=na.pass)
+```
+
+
+```{r unparallel, echo=FALSE}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+```{r predict, cache=TRUE}
+rfPreds <- predict(rffit, newdata = validatingNoNA)
+rfTestPreds <- predict(rffit, newdata = testingNoNA)
+
+validRfAcc <- accuracyComp(rfPreds, validatingNoNA$classe)
+testRfAcc <- accuracyComp(rfTestPreds, testingNoNA$classe)
+```
+
+RF accuracy on validation set:
+```{r}
+print(round(validRfAcc, 5))
+```
+
+RF accuracy on the test set:
+```{r}
+print(round(testRfAcc, 5))
+```
+
+The algorithm trained using `caret::train` automatically computes an OOB accuracy estimate.
+
+Each observation that was not used in the training of all the Random Forests, is predicted using those forests on which it was not trained, the result of all predictions of these observations is aggregated, and this gives an OOB accuracy estimate. That way, it is not necessary to use a separate validation set.
+
+This applies to "bagged" approaches.
+
+
+### Computing the OOB error rates
+The OOB error rate for the SVM is well estimated by the error rate on the held away test set.
+The OOB error rate for the RF is estimated using 
+
+
+### Delving more into errors
+Plot a 5x5 confusion matrix to understand the error patterns if any
+
+```{r confusionMatrices, cache=TRUE}
+svmConfusion <- confusionMatrix(svmTestPreds, testingNoNA$classe)
+rfConfusion <- confusionMatrix(rfTestPreds, testingNoNA$classe)
+
+svmConfusionTable <- apply(svmConfusion$table, 2,
+                           function(x) { round(x / sum(x), 2)})
+rfConfusionTable <- apply(rfConfusion$table, 2,
+                          function(x) { round(x / sum(x), 2)})
+
+
+svmMeltedConfusion <- melt(svmConfusionTable)
+rfMeltedConfusion <- melt(rfConfusionTable)
+```
+
+```{r svmConfusion, echo=FALSE}
+plt <- ggplot(aes(x=Reference, y=Prediction, fill=value, label=value),
+                 data=svmMeltedConfusion) + geom_tile() 
+plt <- plt + scale_fill_gradient(low="white", high="blue")
+plt <- plt + geom_text() + ggtitle("SVM Confusion Matrix")  
+plt
+```
+
+From the previous plot, we can identify two classes that were not classified as well as the others, namely B and D. This gives a hint on what to do next.
+
+```{r rfConfusion, echo=FALSE}
+plt <- ggplot(aes(x=Reference, y=Prediction, fill=value, label=value),
+                 data=rfMeltedConfusion) + geom_tile() 
+
+plt <- plt + scale_fill_gradient(low="white", high="blue")
+plt <- plt + geom_text() + ggtitle("RF Confusion Matrix")  
+plt
+```
+
+Here we can see that there's a slight room for improvement in classes C and D.
+
+
+### Quiz Answers
+```{r quiz}
+svmQuizPreds <- predict(svmfit, newdata = quizNoNA)
+rfQuizPreds <- predict(rffit, newdata = quizNoNA)
+```
+
+```{r svmQuiz, echo=FALSE}
+print("Svm Quiz predictions :")
+print(svmQuizPreds)
+```
+
+```{r rfQuiz, echo=FALSE}
+print("RF Quiz predictions :")
+print(rfQuizPreds)
+```
+
+Both give the correct results for the quiz. Although SVM only has 95% accuracy and RF over 99.5% accuracy.
+
+
+
+# References
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+http://web.archive.org/web/20161224072740/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf
