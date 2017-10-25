@@ -272,7 +272,9 @@ print("RF Quiz predictions :")
 print(rfQuizPreds)
 ```
 
-Both give the correct results for the quiz. Although SVM only has 95% accuracy and RF over 99.5% accuracy.
+SVM gives 19/20 for the quiz. 
+
+RF gives a perfect score.
 
 
 
